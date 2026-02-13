@@ -31,6 +31,19 @@ resource "google_compute_firewall" "allow_ssh" {
   target_tags   = ["kind"]
 }
 
+resource "google_compute_firewall" "allow_k8s_api" {
+  name    = "kind-allow-k8s-api"
+  network = google_compute_network.kind_network.name
+
+  allow {
+    protocol = "tcp"
+    ports    = ["6443"]
+  }
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["kind"]
+}
+
 resource "google_compute_firewall" "allow_internal" {
   name    = "kind-allow-internal"
   network = google_compute_network.kind_network.name
@@ -51,10 +64,17 @@ resource "google_compute_firewall" "allow_internal" {
   target_tags = ["kind"]
 }
 
-resource "google_compute_instance" "kind" {
-  name         = "kind"
-  machine_type = "e2-micro"
+resource "google_compute_instance" "kind1" {
+  name         = "kind1"
+  machine_type = "e2-standard-2"
   tags         = ["kind"]
+
+  scheduling {
+    preemptible                 = true
+    automatic_restart           = false
+    provisioning_model          = "SPOT"
+    instance_termination_action = "STOP"
+  }
 
   boot_disk {
     initialize_params {
@@ -74,9 +94,39 @@ resource "google_compute_instance" "kind" {
   }
 }
 
-resource "google_compute_instance" "kindspot" {
-  name         = "kindspot"
-  machine_type = "e2-micro"
+resource "google_compute_instance" "kind2" {
+  name         = "kind2"
+  machine_type = "e2-standard-2"
+  tags         = ["kind"]
+
+  scheduling {
+    preemptible                 = true
+    automatic_restart           = false
+    provisioning_model          = "SPOT"
+    instance_termination_action = "STOP"
+  }
+
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-12"
+      size  = 30
+      type  = "pd-standard"
+    }
+  }
+
+  network_interface {
+    network = google_compute_network.kind_network.name
+    access_config {}
+  }
+
+  metadata = {
+    ssh-keys = "${var.ssh_user}:${file(var.ssh_pub_key_file)}"
+  }
+}
+
+resource "google_compute_instance" "kind3" {
+  name         = "kind3"
+  machine_type = "e2-standard-2"
   tags         = ["kind"]
 
   scheduling {

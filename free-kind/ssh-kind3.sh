@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 cd "$(dirname "$0")"
 exec ssh -i id_gcp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  laird@"$(terraform output -raw kindspot_external_ip)" "$@"
+  laird@"$(terraform output -raw kind3_external_ip)" "$@"

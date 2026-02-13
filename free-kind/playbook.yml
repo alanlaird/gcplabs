@@ -8,18 +8,25 @@
     ssh_pub_key: "{{ lookup('file', 'id_gcp.pub') }}"
 
   tasks:
-    - name: Add /etc/hosts entries for kind
+    - name: Add /etc/hosts entries for kind1
       lineinfile:
         path: /etc/hosts
-        line: "{{ hostvars['kind']['internal_ip'] }} kind"
-        regexp: '\skind$'
+        line: "{{ hostvars['kind1']['internal_ip'] }} kind1"
+        regexp: '\skind1$'
         state: present
 
-    - name: Add /etc/hosts entries for kindspot
+    - name: Add /etc/hosts entries for kind2
       lineinfile:
         path: /etc/hosts
-        line: "{{ hostvars['kindspot']['internal_ip'] }} kindspot"
-        regexp: '\skindspot$'
+        line: "{{ hostvars['kind2']['internal_ip'] }} kind2"
+        regexp: '\skind2$'
+        state: present
+
+    - name: Add /etc/hosts entries for kind3
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars['kind3']['internal_ip'] }} kind3"
+        regexp: '\skind3$'
         state: present
 
     - name: Ensure .ssh directory exists
@@ -49,15 +56,22 @@
     - name: Configure SSH client
       copy:
         content: |
-          Host kind
-            HostName kind
+          Host kind1
+            HostName kind1
             User {{ ssh_user }}
             IdentityFile ~/.ssh/id_gcp
             StrictHostKeyChecking no
             UserKnownHostsFile /dev/null
 
-          Host kindspot
-            HostName kindspot
+          Host kind2
+            HostName kind2
+            User {{ ssh_user }}
+            IdentityFile ~/.ssh/id_gcp
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host kind3
+            HostName kind3
             User {{ ssh_user }}
             IdentityFile ~/.ssh/id_gcp
             StrictHostKeyChecking no
@@ -114,26 +128,199 @@
         enabled: true
         state: started
 
-    # --- Kind installation ---
-    - name: Get latest kind version
-      shell: curl -fsSL https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/'
-      register: kind_version
+    # --- Kubernetes prerequisites ---
+    - name: Disable swap
+      shell: swapoff -a
       changed_when: false
 
-    - name: Install kind
-      get_url:
-        url: "https://kind.sigs.k8s.io/dl/v{{ kind_version.stdout }}/kind-linux-amd64"
-        dest: /usr/local/bin/kind
-        mode: "0755"
+    - name: Remove swap from fstab
+      lineinfile:
+        path: /etc/fstab
+        regexp: '\sswap\s'
+        state: absent
 
-    # --- kubectl installation ---
-    - name: Get stable kubectl version
-      shell: curl -fsSL https://dl.k8s.io/release/stable.txt
-      register: kubectl_version
+    - name: Load kernel modules config
+      copy:
+        content: |
+          overlay
+          br_netfilter
+        dest: /etc/modules-load.d/k8s.conf
+
+    - name: Load kernel modules immediately
+      shell: modprobe overlay && modprobe br_netfilter
       changed_when: false
 
-    - name: Install kubectl
-      get_url:
-        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/amd64/kubectl"
-        dest: /usr/local/bin/kubectl
+    - name: Set sysctl params for Kubernetes
+      copy:
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+        dest: /etc/sysctl.d/k8s.conf
+
+    - name: Apply sysctl params
+      shell: sysctl --system
+      changed_when: false
+
+    - name: Create containerd config directory
+      file:
+        path: /etc/containerd
+        state: directory
+
+    - name: Check if containerd config has CRI disabled
+      shell: grep -c 'disabled_plugins.*cri' /etc/containerd/config.toml 2>/dev/null || echo 0
+      register: cri_disabled
+      changed_when: false
+
+    - name: Regenerate containerd config for Kubernetes
+      shell: containerd config default > /etc/containerd/config.toml
+      when: cri_disabled.stdout | int > 0
+
+    - name: Enable SystemdCgroup in containerd
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: 'SystemdCgroup = false'
+        replace: 'SystemdCgroup = true'
+
+    - name: Restart containerd
+      systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+
+    # --- kubeadm / kubelet / kubectl ---
+    - name: Add Kubernetes apt key
+      shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes apt repository
+      copy:
+        content: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /\n"
+        dest: /etc/apt/sources.list.d/kubernetes.list
+
+    - name: Install kubeadm kubelet kubectl and dependencies
+      apt:
+        name:
+          - kubeadm
+          - kubelet
+          - kubectl
+          - conntrack
+        state: present
+        update_cache: true
+
+    - name: Hold Kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubeadm
+        - kubelet
+        - kubectl
+
+    - name: Enable kubelet
+      systemd:
+        name: kubelet
+        enabled: true
+
+# --- Control plane initialization ---
+- name: Initialize Kubernetes control plane
+  hosts: control_plane
+  become: true
+  vars:
+    ssh_user: laird
+
+  tasks:
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeadm_conf
+
+    - name: Initialize kubeadm
+      shell: >
+        kubeadm init
+        --apiserver-advertise-address={{ internal_ip }}
+        --pod-network-cidr=10.244.0.0/16
+        --node-name={{ inventory_hostname }}
+        --ignore-preflight-errors=Mem
+      when: not kubeadm_conf.stat.exists
+      register: kubeadm_init
+
+    - name: Create .kube directory for user
+      file:
+        path: "/home/{{ ssh_user }}/.kube"
+        state: directory
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
         mode: "0755"
+
+    - name: Copy admin kubeconfig to user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: "/home/{{ ssh_user }}/.kube/config"
+        remote_src: true
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0600"
+
+    - name: Check if Flannel is installed
+      become_user: "{{ ssh_user }}"
+      become: true
+      shell: kubectl get namespace kube-flannel
+      register: flannel_ns
+      changed_when: false
+      failed_when: false
+
+    - name: Install Flannel CNI
+      become_user: "{{ ssh_user }}"
+      become: true
+      shell: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      when: flannel_ns.rc != 0
+
+    - name: Generate join command
+      shell: kubeadm token create --print-join-command
+      register: join_command
+      changed_when: false
+
+    - name: Store join command
+      set_fact:
+        kubeadm_join_command: "{{ join_command.stdout }}"
+
+    - name: Read kubeconfig for worker distribution
+      slurp:
+        src: "/home/{{ ssh_user }}/.kube/config"
+      register: kubeconfig_content
+
+# --- Worker node join ---
+- name: Join worker nodes to cluster
+  hosts: workers
+  become: true
+  vars:
+    ssh_user: laird
+
+  tasks:
+    - name: Check if node already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Join cluster
+      shell: "{{ hostvars['kind1']['kubeadm_join_command'] }} --node-name={{ inventory_hostname }} --ignore-preflight-errors=Mem"
+      when: not kubelet_conf.stat.exists
+
+    - name: Create .kube directory for user
+      file:
+        path: "/home/{{ ssh_user }}/.kube"
+        state: directory
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0755"
+
+    - name: Copy kubeconfig from control plane
+      copy:
+        content: "{{ hostvars['kind1']['kubeconfig_content']['content'] | b64decode }}"
+        dest: "/home/{{ ssh_user }}/.kube/config"
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0600"
