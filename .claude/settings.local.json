@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(chmod:*)",
+      "Bash(terraform init:*)",
+      "Bash(terraform validate:*)",
+      "Bash(./deploy.sh:*)",
+      "Bash(ssh-keygen:*)",
+      "Bash(ansible-playbook:*)",
+      "Bash(./ssh-kind.sh \"docker --version && kind --version && kubectl version --client=true --short 2>/dev/null || kubectl version --client\")",
+      "Bash(./ssh-kind.sh:*)"
+    ]
+  }
+}

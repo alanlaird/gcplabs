@@ -1,0 +1,139 @@
+---
+- name: Configure kind hosts for mutual SSH access
+  hosts: all
+  become: true
+  vars:
+    ssh_user: laird
+    ssh_priv_key: "{{ lookup('file', 'id_gcp') }}"
+    ssh_pub_key: "{{ lookup('file', 'id_gcp.pub') }}"
+
+  tasks:
+    - name: Add /etc/hosts entries for kind
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars['kind']['internal_ip'] }} kind"
+        regexp: '\skind$'
+        state: present
+
+    - name: Add /etc/hosts entries for kindspot
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ hostvars['kindspot']['internal_ip'] }} kindspot"
+        regexp: '\skindspot$'
+        state: present
+
+    - name: Ensure .ssh directory exists
+      file:
+        path: "/home/{{ ssh_user }}/.ssh"
+        state: directory
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0700"
+
+    - name: Deploy private key
+      copy:
+        content: "{{ ssh_priv_key }}"
+        dest: "/home/{{ ssh_user }}/.ssh/id_gcp"
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0600"
+
+    - name: Deploy public key
+      copy:
+        content: "{{ ssh_pub_key }}"
+        dest: "/home/{{ ssh_user }}/.ssh/id_gcp.pub"
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0644"
+
+    - name: Configure SSH client
+      copy:
+        content: |
+          Host kind
+            HostName kind
+            User {{ ssh_user }}
+            IdentityFile ~/.ssh/id_gcp
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host kindspot
+            HostName kindspot
+            User {{ ssh_user }}
+            IdentityFile ~/.ssh/id_gcp
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+        dest: "/home/{{ ssh_user }}/.ssh/config"
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0600"
+
+    # --- Docker installation ---
+    - name: Install Docker prerequisites
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker apt repository
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ssh_user }}"
+        groups: docker
+        append: true
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    # --- Kind installation ---
+    - name: Get latest kind version
+      shell: curl -fsSL https://api.github.com/repos/kubernetes-sigs/kind/releases/latest | grep '"tag_name"' | sed 's/.*"v\(.*\)".*/\1/'
+      register: kind_version
+      changed_when: false
+
+    - name: Install kind
+      get_url:
+        url: "https://kind.sigs.k8s.io/dl/v{{ kind_version.stdout }}/kind-linux-amd64"
+        dest: /usr/local/bin/kind
+        mode: "0755"
+
+    # --- kubectl installation ---
+    - name: Get stable kubectl version
+      shell: curl -fsSL https://dl.k8s.io/release/stable.txt
+      register: kubectl_version
+      changed_when: false
+
+    - name: Install kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version.stdout }}/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: "0755"
