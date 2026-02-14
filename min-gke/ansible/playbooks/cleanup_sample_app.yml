@@ -1,0 +1,31 @@
+---
+- name: Cleanup GKE Cluster
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    app_namespace: "default"
+    app_name: "sample-app"
+
+  tasks:
+    - name: Delete sample deployment
+      kubernetes.core.k8s:
+        namespace: "{{ app_namespace }}"
+        name: "{{ app_name }}"
+        api_version: apps/v1
+        kind: Deployment
+        state: absent
+      ignore_errors: yes
+
+    - name: Delete sample service
+      kubernetes.core.k8s:
+        namespace: "{{ app_namespace }}"
+        name: "{{ app_name }}-service"
+        api_version: v1
+        kind: Service
+        state: absent
+      ignore_errors: yes
+
+    - name: Message
+      debug:
+        msg: "Sample application cleanup complete"

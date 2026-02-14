@@ -1,0 +1,77 @@
+---
+- name: Deploy Sample Application
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    app_namespace: "default"
+    app_name: "sample-app"
+    replicas: 1
+    image: "nginx:latest"
+    image_pull_policy: "IfNotPresent"
+
+  tasks:
+    - name: Create deployment
+      kubernetes.core.k8s:
+        namespace: "{{ app_namespace }}"
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ app_name }}"
+            labels:
+              app: "{{ app_name }}"
+          spec:
+            replicas: "{{ replicas }}"
+            selector:
+              matchLabels:
+                app: "{{ app_name }}"
+            template:
+              metadata:
+                labels:
+                  app: "{{ app_name }}"
+              spec:
+                containers:
+                  - name: "{{ app_name }}"
+                    image: "{{ image }}"
+                    imagePullPolicy: "{{ image_pull_policy }}"
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"
+                      limits:
+                        cpu: "250m"
+                        memory: "256Mi"
+                    ports:
+                      - containerPort: 80
+        state: present
+
+    - name: Expose deployment with service
+      kubernetes.core.k8s:
+        namespace: "{{ app_namespace }}"
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: "{{ app_name }}-service"
+          spec:
+            type: LoadBalancer
+            selector:
+              app: "{{ app_name }}"
+            ports:
+              - protocol: TCP
+                port: 80
+                targetPort: 80
+        state: present
+
+    - name: Get service details
+      kubernetes.core.k8s_info:
+        kind: Service
+        namespace: "{{ app_namespace }}"
+        name: "{{ app_name }}-service"
+      register: service_info
+
+    - name: Display service information
+      debug:
+        msg: "Service {{ app_name }} exposed at: {{ service_info.resources[0].status.load_balancer.ingress[0].ip }}"
+      when: service_info.resources[0].status.load_balancer.ingress is defined

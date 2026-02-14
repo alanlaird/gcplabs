@@ -1,0 +1,65 @@
+---
+- name: Configure Cost Optimization
+  hosts: localhost
+  gather_facts: no
+
+  vars:
+    namespace: "cost-optimization"
+
+  tasks:
+    - name: Create cost optimization namespace
+      kubernetes.core.k8s:
+        name: "{{ namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Create Pod Disruption Budget for stable workloads
+      kubernetes.core.k8s:
+        namespace: "{{ namespace }}"
+        definition:
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: cost-optimization-pdb
+          spec:
+            minAvailable: 1
+            selector:
+              matchLabels:
+                app: critical
+        state: present
+
+    - name: Create Vertical Pod Autoscaler namespace
+      kubernetes.core.k8s:
+        name: vpa
+        api_version: v1
+        kind: Namespace
+        state: present
+      ignore_errors: yes
+
+    - name: Create LimitRange for resource constraints
+      kubernetes.core.k8s:
+        namespace: default
+        definition:
+          apiVersion: v1
+          kind: LimitRange
+          metadata:
+            name: default-limits
+          spec:
+            limits:
+              - type: Container
+                default:
+                  cpu: "250m"
+                  memory: "256Mi"
+                defaultRequest:
+                  cpu: "100m"
+                  memory: "128Mi"
+              - type: Pod
+                max:
+                  cpu: "1"
+                  memory: "1Gi"
+        state: present
+
+    - name: Display cost optimization settings
+      debug:
+        msg: "Cost optimization configured successfully"

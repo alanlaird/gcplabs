@@ -1,0 +1,13 @@
+project_id              = "your-gcp-project-id"
+region                  = "us-central1"
+cluster_name            = "min-gke-cluster"
+network_name            = "min-gke-network"
+machine_type            = "e2-medium"
+initial_node_count      = 1
+min_node_count          = 1
+max_node_count          = 3
+enable_preemptible_nodes = true
+disk_size_gb            = 30
+enable_shielded_nodes   = true
+kubernetes_version      = "1.26.13-gke.1000"
+enable_stackdriver_kubernetes = true

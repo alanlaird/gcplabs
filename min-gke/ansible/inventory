@@ -1,0 +1,9 @@
+# Ansible Inventory for GKE Cluster
+# This file will be updated with cluster information after Terraform deployment
+
+[gke_cluster]
+# Cluster endpoint will be filled in after terraform apply
+# cluster_endpoint = "https://YOUR_CLUSTER_ENDPOINT"
+
+[gke_cluster:vars]
+ansible_connection = local
