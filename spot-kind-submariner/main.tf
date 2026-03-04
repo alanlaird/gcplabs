@@ -44,8 +44,35 @@ resource "google_compute_firewall" "allow_k8s_api" {
   target_tags   = ["kind"]
 }
 
+resource "google_compute_firewall" "allow_internal" {
+  name    = "kind-allow-internal"
+  network = google_compute_network.kind_network.name
+
+  allow { protocol = "tcp" }
+  allow { protocol = "udp" }
+  allow { protocol = "icmp" }
+
+  source_tags = ["kind"]
+  target_tags = ["kind"]
+}
+
+# Submariner VXLAN tunnels (UDP 4500 cross-cluster, UDP 4800 route agent) and NAT discovery (UDP 4490)
+resource "google_compute_firewall" "allow_submariner" {
+  name    = "kind-allow-submariner"
+  network = google_compute_network.kind_network.name
+
+  allow {
+    protocol = "udp"
+    ports    = ["4490", "4500", "4800"]
+  }
+
+  source_tags = ["kind"]
+  target_tags = ["kind"]
+}
+
 resource "google_compute_instance" "kind" {
-  name         = "kind1"
+  count        = 3
+  name         = "kind${count.index + 1}"
   machine_type = "e2-standard-2"
   tags         = ["kind"]
 
@@ -73,4 +100,3 @@ resource "google_compute_instance" "kind" {
     ssh-keys = "${var.ssh_user}:${file(var.ssh_pub_key_file)}"
   }
 }
-

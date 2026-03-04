@@ -1,0 +1,8 @@
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+inventory.ini
+kubeconfig*.yaml
+broker-info.subm*
+id_gcp
+id_gcp.pub

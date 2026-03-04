@@ -5,7 +5,7 @@ variable "project" {
 }
 
 variable "region" {
-  description = "GCP region"
+  description = "GCP region (free tier eligible)"
   type        = string
   default     = "us-west1"
 }
@@ -33,4 +33,5 @@ variable "ssh_priv_key_file" {
   type        = string
   default     = "id_gcp"
 }
+
 

@@ -1,0 +1,221 @@
+---
+- name: Install Docker and kind on all nodes
+  hosts: kind_hosts
+  become: true
+  vars:
+    ssh_user: laird
+    kind_version: "v0.26.0"
+    kubectl_version: "v1.32.0"
+    # Non-overlapping CIDRs required for Submariner cross-cluster routing
+    cidr_map:
+      kind1: {pod: "10.244.0.0/16", svc: "10.96.0.0/16",  docker: "172.21.0.0/16"}
+      kind2: {pod: "10.245.0.0/16", svc: "10.97.0.0/16",  docker: "172.22.0.0/16"}
+      kind3: {pod: "10.246.0.0/16", svc: "10.98.0.0/16",  docker: "172.23.0.0/16"}
+    pod_cidr:    "{{ cidr_map[inventory_hostname].pod }}"
+    svc_cidr:    "{{ cidr_map[inventory_hostname].svc }}"
+    docker_subnet: "{{ cidr_map[inventory_hostname].docker }}"
+
+  tasks:
+    # --- Docker ---
+    - name: Install Docker prerequisites
+      apt:
+        name: [ca-certificates, curl, gnupg]
+        state: present
+        update_cache: true
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker apt repository
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin]
+        state: present
+        update_cache: true
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ssh_user }}"
+        groups: docker
+        append: true
+
+    - name: Enable and start Docker
+      systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    # --- kind ---
+    - name: Install kind
+      get_url:
+        url: "https://kind.sigs.k8s.io/dl/{{ kind_version }}/kind-linux-amd64"
+        dest: /usr/local/bin/kind
+        mode: "0755"
+
+    # --- kubectl ---
+    - name: Install kubectl
+      get_url:
+        url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+        dest: /usr/local/bin/kubectl
+        mode: "0755"
+
+    # --- kind cluster config ---
+    # Each VM gets its own named cluster with unique CIDRs.
+    # Worker node exposes UDP 4800 for Submariner VXLAN tunnels.
+    # certSANs allow kubectl access from local machine via external IP.
+    - name: Write kind cluster config
+      copy:
+        dest: "/home/{{ ssh_user }}/kind-config.yaml"
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0644"
+        content: |
+          kind: Cluster
+          apiVersion: kind.x-k8s.io/v1alpha4
+          name: {{ inventory_hostname }}
+          networking:
+            podSubnet: "{{ pod_cidr }}"
+            serviceSubnet: "{{ svc_cidr }}"
+            apiServerAddress: "0.0.0.0"
+            apiServerPort: 6443
+          nodes:
+          - role: control-plane
+          - role: worker
+            extraPortMappings:
+            - containerPort: 4490
+              hostPort: 4490
+              protocol: UDP
+            - containerPort: 4500
+              hostPort: 4500
+              protocol: UDP
+            - containerPort: 4800
+              hostPort: 4800
+              protocol: UDP
+          kubeadmConfigPatches:
+          - |
+            kind: ClusterConfiguration
+            apiServer:
+              certSANs:
+              - "{{ ansible_host }}"
+              - "{{ internal_ip }}"
+              - localhost
+              - 127.0.0.1
+
+    # --- Docker network ---
+    # Pre-create the 'kind' Docker network with a cluster-specific subnet so that
+    # each VM's gateway container gets a unique private IP.  Submariner derives
+    # VTEP IPs from the container's private IP; identical subnets across VMs cause
+    # a VTEP collision that breaks cross-cluster VXLAN routing.
+    - name: Pre-create kind Docker network with unique subnet
+      become_user: "{{ ssh_user }}"
+      shell: |
+        sg docker -c "
+          EXISTING=\$(docker network inspect kind --format {% raw %}'{{range .IPAM.Config}}{{.Subnet}} {{end}}'{% endraw %} 2>/dev/null)
+          if echo \"\$EXISTING\" | grep -q '{{ docker_subnet }}'; then
+            echo 'already has {{ docker_subnet }}'
+          elif [ -z \"\$EXISTING\" ]; then
+            docker network create --subnet {{ docker_subnet }} --ipv6 --subnet fc00:f853:ccd:e793::/64 kind
+          else
+            echo 'WARNING: kind network has subnet '\$EXISTING' (expected {{ docker_subnet }}). Delete cluster+network to reset.'
+          fi
+        "
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      register: docker_net
+      changed_when: "'WARNING' not in docker_net.stdout and 'already has' not in docker_net.stdout"
+
+    # --- create cluster ---
+    - name: Check if kind cluster already exists
+      become_user: "{{ ssh_user }}"
+      shell: kind get clusters 2>/dev/null | grep -q "^{{ inventory_hostname }}$"
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      register: cluster_exists
+      changed_when: false
+      failed_when: false
+
+    # sg docker activates the docker group without requiring a new login session
+    - name: Create kind cluster
+      become_user: "{{ ssh_user }}"
+      shell: sg docker -c "kind create cluster --name {{ inventory_hostname }} --config /home/{{ ssh_user }}/kind-config.yaml"
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      when: cluster_exists.rc != 0
+
+    # --- kubeconfig ---
+    - name: Ensure .kube directory exists
+      file:
+        path: "/home/{{ ssh_user }}/.kube"
+        state: directory
+        owner: "{{ ssh_user }}"
+        group: "{{ ssh_user }}"
+        mode: "0755"
+
+    - name: Export kubeconfig
+      become_user: "{{ ssh_user }}"
+      shell: kind get kubeconfig --name {{ inventory_hostname }} > /home/{{ ssh_user }}/.kube/config
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      changed_when: false
+
+    # Patch server URL so local kubectl can reach the cluster via external IP
+    - name: Patch kubeconfig server to external IP
+      become_user: "{{ ssh_user }}"
+      shell: >
+        kubectl config set-cluster kind-{{ inventory_hostname }}
+        --server=https://{{ ansible_host }}:6443
+        --kubeconfig /home/{{ ssh_user }}/.kube/config
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+      changed_when: false
+
+    # --- Submariner gateway setup ---
+    # Label the worker node as the Submariner gateway and annotate it with the
+    # VM's internal IP so other cluster gateways know where to send VXLAN traffic.
+    - name: Label worker node as Submariner gateway
+      become_user: "{{ ssh_user }}"
+      shell: kubectl label node {{ inventory_hostname }}-worker submariner.io/gateway=true --overwrite
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        KUBECONFIG: "/home/{{ ssh_user }}/.kube/config"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+
+    - name: Annotate gateway with VM internal IP
+      become_user: "{{ ssh_user }}"
+      shell: kubectl annotate node {{ inventory_hostname }}-worker "gateway.submariner.io/public-ip=ipv4:{{ internal_ip }}" --overwrite
+      environment:
+        HOME: "/home/{{ ssh_user }}"
+        KUBECONFIG: "/home/{{ ssh_user }}/.kube/config"
+        PATH: "/usr/local/bin:/usr/bin:/bin"
+
+    # Forward Submariner ports from VM interface to gateway container.
+    # Ports: 4490 (NAT discovery), 4500 (VXLAN cross-cluster tunnel), 4800 (route agent VXLAN)
+    # kind's extraPortMappings handles this for new clusters; iptables rules ensure it for existing ones.
+    - name: Forward Submariner UDP ports to gateway container
+      shell: |
+        GW_IP=$(docker inspect {{ inventory_hostname }}-worker \
+          --format '{{ "{{" }}.NetworkSettings.Networks.kind.IPAddress{{ "}}" }}')
+        for PORT in 4490 4500 4800; do
+          iptables -t nat -C PREROUTING -i ens4 -p udp --dport $PORT \
+            -j DNAT --to-destination ${GW_IP}:${PORT} 2>/dev/null || \
+          iptables -t nat -A PREROUTING -i ens4 -p udp --dport $PORT \
+            -j DNAT --to-destination ${GW_IP}:${PORT}
+          iptables -C FORWARD -p udp -d ${GW_IP} --dport $PORT -j ACCEPT 2>/dev/null || \
+          iptables -A FORWARD -p udp -d ${GW_IP} --dport $PORT -j ACCEPT
+        done
+      changed_when: false
