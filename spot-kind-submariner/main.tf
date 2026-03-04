@@ -14,12 +14,12 @@ provider "google" {
 }
 
 resource "google_compute_network" "kind_network" {
-  name                    = "kind-network"
+  name                    = "kind-sub-network"
   auto_create_subnetworks = true
 }
 
 resource "google_compute_firewall" "allow_ssh" {
-  name    = "kind-allow-ssh"
+  name    = "kind-sub-allow-ssh"
   network = google_compute_network.kind_network.name
 
   allow {
@@ -28,11 +28,11 @@ resource "google_compute_firewall" "allow_ssh" {
   }
 
   source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["kind"]
+  target_tags   = ["kind-sub"]
 }
 
 resource "google_compute_firewall" "allow_k8s_api" {
-  name    = "kind-allow-k8s-api"
+  name    = "kind-sub-allow-k8s-api"
   network = google_compute_network.kind_network.name
 
   allow {
@@ -41,24 +41,24 @@ resource "google_compute_firewall" "allow_k8s_api" {
   }
 
   source_ranges = ["0.0.0.0/0"]
-  target_tags   = ["kind"]
+  target_tags   = ["kind-sub"]
 }
 
 resource "google_compute_firewall" "allow_internal" {
-  name    = "kind-allow-internal"
+  name    = "kind-sub-allow-internal"
   network = google_compute_network.kind_network.name
 
   allow { protocol = "tcp" }
   allow { protocol = "udp" }
   allow { protocol = "icmp" }
 
-  source_tags = ["kind"]
-  target_tags = ["kind"]
+  source_tags = ["kind-sub"]
+  target_tags = ["kind-sub"]
 }
 
 # Submariner VXLAN tunnels (UDP 4500 cross-cluster, UDP 4800 route agent) and NAT discovery (UDP 4490)
 resource "google_compute_firewall" "allow_submariner" {
-  name    = "kind-allow-submariner"
+  name    = "kind-sub-allow-submariner"
   network = google_compute_network.kind_network.name
 
   allow {
@@ -66,15 +66,15 @@ resource "google_compute_firewall" "allow_submariner" {
     ports    = ["4490", "4500", "4800"]
   }
 
-  source_tags = ["kind"]
-  target_tags = ["kind"]
+  source_tags = ["kind-sub"]
+  target_tags = ["kind-sub"]
 }
 
 resource "google_compute_instance" "kind" {
   count        = 3
-  name         = "kind${count.index + 1}"
+  name         = "kind-sub${count.index + 1}"
   machine_type = "e2-standard-2"
-  tags         = ["kind"]
+  tags         = ["kind-sub"]
 
   scheduling {
     preemptible                 = true

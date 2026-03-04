@@ -2,7 +2,7 @@
         init plan apply inventory ansible keys \
         ssh1 ssh2 ssh3 destroy clean reset-clusters _wait-ssh _subctl-install
 
-SSH    = ssh -i id_gcp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+SSH    = ssh -i id_gcp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o IdentitiesOnly=yes
 KUBE   = kubectl --kubeconfig kubeconfig.yaml
 SUBCTL = PATH="$$PATH:$$HOME/.local/bin" subctl
 
@@ -88,7 +88,7 @@ kubeconfig:
 	@python3 -c "\
 import json, subprocess, os; \
 ext = json.loads(subprocess.check_output(['terraform','output','-json','external_ips'])); \
-[subprocess.run(['scp','-i','id_gcp','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null', \
+[subprocess.run(['scp','-i','id_gcp','-o','StrictHostKeyChecking=no','-o','UserKnownHostsFile=/dev/null','-o','IdentitiesOnly=yes', \
   'laird@{}:.kube/config'.format(ip),'kubeconfig-kind{}.yaml'.format(i+1)],check=True) \
   for i,ip in enumerate(ext)]; \
 kc = ':'.join(['kubeconfig-kind{}.yaml'.format(i+1) for i in range(len(ext))]); \
