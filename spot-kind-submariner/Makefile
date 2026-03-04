@@ -1,5 +1,5 @@
 .PHONY: all help create submariner kubeconfig demo \
-        init plan apply inventory ansible \
+        init plan apply inventory ansible keys \
         ssh1 ssh2 ssh3 destroy clean reset-clusters _wait-ssh _subctl-install
 
 SSH    = ssh -i id_gcp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
@@ -16,6 +16,7 @@ help:
 	@echo "    submariner     - (Re)install Submariner broker and join all clusters"
 	@echo ""
 	@echo "  Steps (run individually):"
+	@echo "    keys           - Generate SSH keypair (id_gcp / id_gcp.pub) if missing"
 	@echo "    init           - terraform init"
 	@echo "    plan           - terraform plan"
 	@echo "    inventory      - Generate inventory.ini from terraform outputs"
@@ -32,7 +33,13 @@ help:
 
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
-create: init apply inventory ansible kubeconfig submariner
+create: keys init apply inventory ansible kubeconfig submariner
+
+# ── SSH keys ──────────────────────────────────────────────────────────────────
+
+keys:
+	@test -f id_gcp || ssh-keygen -t ed25519 -f id_gcp -N "" -C "spot-kind-submariner"
+	@echo "SSH key: id_gcp (gitignored)"
 
 # ── Terraform ─────────────────────────────────────────────────────────────────
 
