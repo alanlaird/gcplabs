@@ -186,4 +186,4 @@ destroy:
 	terraform destroy -auto-approve
 
 clean: destroy
-	rm -f inventory.ini kubeconfig.yaml kubeconfig-kind*.yaml broker-info.subm
+	rm -f inventory.ini kubeconfig.yaml kubeconfig-kind*.yaml broker-info.subm id_gcp*
