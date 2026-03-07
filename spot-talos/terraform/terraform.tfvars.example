@@ -1,0 +1,8 @@
+project_id    = "your-gcp-project-id"
+region        = "us-west4"
+zone          = "us-west4-a"
+cluster_name  = "spot-talos"
+machine_type  = "e2-medium"
+worker_count  = 2
+disk_size_gb  = 20
+talos_version = "v1.12.4"
