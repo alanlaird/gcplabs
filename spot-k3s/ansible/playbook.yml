@@ -1,0 +1,90 @@
+---
+# Play 1: Install k3s server on master
+- name: Install k3s server
+  hosts: master
+  become: true
+  vars:
+    k3s_version: "v1.29.3+k3s1"
+  tasks:
+    - name: Wait for SSH connectivity
+      wait_for_connection:
+        delay: 5
+        timeout: 180
+
+    - name: Install k3s server
+      shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_BIND_ADDRESS="{{ private_ip }}" \
+          INSTALL_K3S_EXEC="server --tls-san {{ ansible_host }}" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s-server, setup]
+
+    - name: Wait for k3s node token
+      wait_for:
+        path: /var/lib/rancher/k3s/server/node-token
+        timeout: 60
+      tags: [k3s-server, setup]
+
+    - name: Read k3s node token
+      slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_raw
+      tags: [k3s-server, setup, k3s-agent]
+
+    - name: Set k3s token fact
+      set_fact:
+        k3s_node_token: "{{ k3s_token_raw['content'] | b64decode | trim }}"
+      tags: [k3s-server, setup, k3s-agent]
+
+# Play 2: Install k3s agents on workers
+- name: Install k3s agents
+  hosts: workers
+  become: true
+  vars:
+    k3s_version: "v1.29.3+k3s1"
+  tasks:
+    - name: Wait for SSH connectivity
+      wait_for_connection:
+        delay: 5
+        timeout: 180
+
+    - name: Install k3s agent
+      shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_URL="https://{{ hostvars[groups['master'][0]]['private_ip'] }}:6443" \
+          K3S_TOKEN="{{ hostvars[groups['master'][0]]['k3s_node_token'] }}" \
+          sh -
+      args:
+        creates: /usr/local/bin/k3s
+      tags: [k3s-agent, setup]
+
+# Play 3: Fetch and localise kubeconfig
+- name: Fetch kubeconfig
+  hosts: master
+  become: true
+  tasks:
+    - name: Wait for kubeconfig to exist
+      wait_for:
+        path: /etc/rancher/k3s/k3s.yaml
+        timeout: 60
+      tags: [kubeconfig, setup]
+
+    - name: Fetch kubeconfig from master
+      fetch:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: ../kubeconfig.yaml
+        flat: yes
+      tags: [kubeconfig, setup]
+
+    - name: Replace 127.0.0.1 with master public IP in kubeconfig
+      delegate_to: localhost
+      become: false
+      replace:
+        path: ../kubeconfig.yaml
+        regexp: '127\.0\.0\.1'
+        replace: "{{ ansible_host }}"
+      tags: [kubeconfig, setup]

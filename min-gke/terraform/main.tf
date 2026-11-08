@@ -27,6 +27,8 @@ resource "google_container_cluster" "primary" {
   network            = google_compute_network.primary.name
   subnetwork         = google_compute_subnetwork.primary.name
 
+  deletion_protection = false
+
   min_master_version = var.kubernetes_version
 
   # Enable IP aliasing

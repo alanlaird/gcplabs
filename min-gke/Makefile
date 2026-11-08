@@ -1,4 +1,8 @@
-.PHONY: help init plan apply destroy clean kubeconfig prereqs ansible-setup
+.PHONY: help init plan apply destroy clean kubeconfig prereqs ansible-setup status
+
+PROJECT  := min-gke-project
+CLUSTER  := min-gke-cluster
+REGION   := us-central1
 
 help:
 	@echo "Minimal GKE Cluster Management"
@@ -40,14 +44,7 @@ destroy:
 	@cd terraform && terraform destroy
 
 kubeconfig:
-	@PROJECT_ID=$$(cd terraform && terraform output -raw project_id 2>/dev/null || echo ""); \
-	CLUSTER=$$(cd terraform && terraform output -raw kubernetes_cluster_name 2>/dev/null || echo "min-gke-cluster"); \
-	REGION=$$(cd terraform && terraform output -raw region 2>/dev/null || echo "us-central1"); \
-	if [ -n "$$PROJECT_ID" ]; then \
-		gcloud container clusters get-credentials $$CLUSTER --region=$$REGION --project=$$PROJECT_ID; \
-	else \
-		echo "Terraform outputs not available. Configure manually or run 'terraform apply' first"; \
-	fi
+	gcloud container clusters get-credentials $(CLUSTER) --region=$(REGION) --project=$(PROJECT)
 
 ansible-setup: kubeconfig
 	@cd ansible && ansible-playbook playbooks/setup_cluster.yml
@@ -61,11 +58,18 @@ ansible-deploy: kubeconfig
 ansible-cleanup: kubeconfig
 	@cd ansible && ansible-playbook playbooks/cleanup_sample_app.yml
 
-status:
-	@echo "Cluster Status:"
+status: kubeconfig
+	@echo ""
+	@echo "=== Cluster ==="
+	@gcloud container clusters describe $(CLUSTER) \
+		--region=$(REGION) --project=$(PROJECT) \
+		--format="table[box](name,status,currentMasterVersion,currentNodeCount,endpoint)" \
+		--quiet 2>/dev/null
+	@echo ""
+	@echo "=== Nodes ==="
 	@kubectl get nodes -o wide
 	@echo ""
-	@echo "Pods:"
+	@echo "=== Pods ==="
 	@kubectl get pods --all-namespaces
 
 cost-estimate:
